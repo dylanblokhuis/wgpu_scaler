@@ -1,6 +1,4 @@
-//! MetalFX temporal scaler implementation (Metal backend only).
-
-#![cfg(target_os = "macos")]
+//! MetalFX spatial and temporal scalers (Metal backend only).
 
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_metal::MTLPixelFormat;
@@ -11,15 +9,18 @@ use objc2_metal_fx::{
 };
 use wgpu::{AstcBlock, AstcChannel, wgc::api::Metal};
 
-use crate::{TemporalScaler, UpscalerDescriptor};
+use crate::{SpatialScaler, SpatialUpscalerDescriptor, TemporalScaler, TemporalUpscalerDescriptor};
 
 pub struct MetalTemporalScaler {
     inner: Retained<ProtocolObject<dyn MTLFXTemporalScaler>>,
 }
 
 impl MetalTemporalScaler {
-    pub(crate) fn new(device: &wgpu::Device, descriptor: UpscalerDescriptor) -> Self {
-        let metal_device = unsafe { device.as_hal::<Metal>() }.unwrap();
+    pub(crate) fn try_new(
+        device: &wgpu::Device,
+        descriptor: TemporalUpscalerDescriptor,
+    ) -> Option<Self> {
+        let metal_device = unsafe { device.as_hal::<Metal>() }?;
 
         let temporal_scaler = unsafe {
             let desc = MTLFXTemporalScalerDescriptor::new();
@@ -31,17 +32,31 @@ impl MetalTemporalScaler {
             desc.setMotionTextureFormat(map_format(descriptor.motion_vectors_texture_format));
             desc.setDepthTextureFormat(map_format(descriptor.depth_texture_format));
             desc.setOutputTextureFormat(map_format(descriptor.output_texture_format));
+            desc.setAutoExposureEnabled(descriptor.auto_exposure);
+            desc.setRequiresSynchronousInitialization(descriptor.requires_synchronous_initialization);
+            desc.setReactiveMaskTextureEnabled(descriptor.reactive_mask_enabled);
+            if descriptor.reactive_mask_enabled {
+                desc.setReactiveMaskTextureFormat(map_format(
+                    descriptor.reactive_mask_texture_format,
+                ));
+            }
+            desc.setInputContentPropertiesEnabled(descriptor.input_content_properties_enabled);
+            if descriptor.input_content_properties_enabled {
+                desc.setInputContentMinScale(descriptor.input_content_min_scale);
+                desc.setInputContentMaxScale(descriptor.input_content_max_scale);
+            }
 
-            let scaler = desc
-                .newTemporalScalerWithDevice(metal_device.raw_device())
-                .unwrap();
-
-            scaler
+            desc.newTemporalScalerWithDevice(metal_device.raw_device())?
         };
 
-        MetalTemporalScaler {
-            inner: temporal_scaler,
+        unsafe {
+            temporal_scaler.setInputContentWidth(descriptor.input_width as _);
+            temporal_scaler.setInputContentHeight(descriptor.input_height as _);
         }
+
+        Some(MetalTemporalScaler {
+            inner: temporal_scaler,
+        })
     }
 }
 
@@ -54,6 +69,7 @@ impl TemporalScaler for MetalTemporalScaler {
             )
         }
     }
+
     fn get_output_size(&self) -> (u32, u32) {
         unsafe {
             (
@@ -62,13 +78,15 @@ impl TemporalScaler for MetalTemporalScaler {
             )
         }
     }
+
     fn set_reset(&mut self, reset: bool) {
         unsafe { self.inner.setReset(reset) };
     }
+
     fn set_color_texture(&mut self, color_texture: wgpu::TextureView) {
         unsafe {
             self.inner.setColorTexture(Some(
-                &color_texture
+                color_texture
                     .texture()
                     .as_hal::<Metal>()
                     .unwrap()
@@ -76,10 +94,11 @@ impl TemporalScaler for MetalTemporalScaler {
             ))
         };
     }
+
     fn set_motion_texture(&mut self, motion_texture: wgpu::TextureView) {
         unsafe {
             self.inner.setMotionTexture(Some(
-                &motion_texture
+                motion_texture
                     .texture()
                     .as_hal::<Metal>()
                     .unwrap()
@@ -87,10 +106,11 @@ impl TemporalScaler for MetalTemporalScaler {
             ))
         };
     }
+
     fn set_depth_texture(&mut self, depth_texture: wgpu::TextureView) {
         unsafe {
             self.inner.setDepthTexture(Some(
-                &depth_texture
+                depth_texture
                     .texture()
                     .as_hal::<Metal>()
                     .unwrap()
@@ -98,10 +118,11 @@ impl TemporalScaler for MetalTemporalScaler {
             ))
         };
     }
+
     fn set_output_texture(&mut self, output_texture: wgpu::TextureView) {
         unsafe {
             self.inner.setOutputTexture(Some(
-                &output_texture
+                output_texture
                     .texture()
                     .as_hal::<Metal>()
                     .unwrap()
@@ -109,27 +130,69 @@ impl TemporalScaler for MetalTemporalScaler {
             ))
         };
     }
+
     fn set_motion_vector_scale(&mut self, motion_vector_scale: (f32, f32)) {
         unsafe {
             self.inner.setMotionVectorScaleX(motion_vector_scale.0);
             self.inner.setMotionVectorScaleY(motion_vector_scale.1);
         }
     }
+
     fn set_jitter_offset(&mut self, jitter: (f32, f32)) {
         unsafe {
             self.inner.setJitterOffsetX(jitter.0);
             self.inner.setJitterOffsetY(jitter.1);
         }
     }
+
     fn set_depth_reversed(&mut self, is_depth_reversed: bool) {
         unsafe { self.inner.setDepthReversed(is_depth_reversed) };
+    }
+
+    fn set_input_content_size(&mut self, width: u32, height: u32) {
+        unsafe {
+            self.inner.setInputContentWidth(width as _);
+            self.inner.setInputContentHeight(height as _);
+        }
+    }
+
+    fn set_exposure_texture(&mut self, exposure_texture: Option<wgpu::TextureView>) {
+        unsafe {
+            match exposure_texture.as_ref() {
+                Some(v) => self.inner.setExposureTexture(Some(
+                    v.texture()
+                        .as_hal::<Metal>()
+                        .unwrap()
+                        .raw_handle(),
+                )),
+                None => self.inner.setExposureTexture(None),
+            }
+        };
+    }
+
+    fn set_reactive_mask_texture(&mut self, mask: Option<wgpu::TextureView>) {
+        unsafe {
+            match mask.as_ref() {
+                Some(v) => self.inner.setReactiveMaskTexture(Some(
+                    v.texture()
+                        .as_hal::<Metal>()
+                        .unwrap()
+                        .raw_handle(),
+                )),
+                None => self.inner.setReactiveMaskTexture(None),
+            }
+        };
+    }
+
+    fn set_pre_exposure(&mut self, pre_exposure: f32) {
+        unsafe { self.inner.setPreExposure(pre_exposure) };
     }
 
     fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) {
         unsafe {
             encoder.as_hal_mut::<Metal, _, _>(|inner| {
                 let handle = inner.unwrap().raw_command_buffer().unwrap();
-                self.inner.encodeToCommandBuffer(&handle);
+                self.inner.encodeToCommandBuffer(handle);
             });
         };
     }
@@ -138,9 +201,13 @@ impl TemporalScaler for MetalTemporalScaler {
 pub struct MetalSpatialScaler {
     inner: Retained<ProtocolObject<dyn MTLFXSpatialScaler>>,
 }
+
 impl MetalSpatialScaler {
-    pub(crate) fn new(device: &wgpu::Device, descriptor: UpscalerDescriptor) -> Self {
-        let metal_device = unsafe { device.as_hal::<Metal>() }.unwrap();
+    pub(crate) fn try_new(
+        device: &wgpu::Device,
+        descriptor: SpatialUpscalerDescriptor,
+    ) -> Option<Self> {
+        let metal_device = unsafe { device.as_hal::<Metal>() }?;
 
         let spatial_scaler = unsafe {
             let desc = MTLFXSpatialScalerDescriptor::new();
@@ -151,27 +218,33 @@ impl MetalSpatialScaler {
             desc.setColorTextureFormat(map_format(descriptor.color_texture_format));
             desc.setOutputTextureFormat(map_format(descriptor.output_texture_format));
 
-            desc.setColorProcessingMode(if descriptor.color_texture_format.is_srgb() {
-                MTLFXSpatialScalerColorProcessingMode::Perceptual
-            } else if is_hdr(descriptor.color_texture_format) {
-                MTLFXSpatialScalerColorProcessingMode::HDR
-            } else {
-                MTLFXSpatialScalerColorProcessingMode::Linear
-            });
+            desc.setColorProcessingMode(color_processing_mode(descriptor.color_texture_format));
 
-            let scaler = desc
-                .newSpatialScalerWithDevice(metal_device.raw_device())
-                .unwrap();
-            scaler
+            desc.newSpatialScalerWithDevice(metal_device.raw_device())?
         };
 
-        MetalSpatialScaler {
-            inner: spatial_scaler,
+        unsafe {
+            spatial_scaler.setInputContentWidth(descriptor.input_width as _);
+            spatial_scaler.setInputContentHeight(descriptor.input_height as _);
         }
+
+        Some(MetalSpatialScaler {
+            inner: spatial_scaler,
+        })
     }
 }
 
-impl TemporalScaler for MetalSpatialScaler {
+fn color_processing_mode(format: wgpu::TextureFormat) -> MTLFXSpatialScalerColorProcessingMode {
+    if format.is_srgb() {
+        MTLFXSpatialScalerColorProcessingMode::Perceptual
+    } else if is_hdr(format) {
+        MTLFXSpatialScalerColorProcessingMode::HDR
+    } else {
+        MTLFXSpatialScalerColorProcessingMode::Linear
+    }
+}
+
+impl SpatialScaler for MetalSpatialScaler {
     fn get_input_size(&self) -> (u32, u32) {
         unsafe {
             (
@@ -180,6 +253,7 @@ impl TemporalScaler for MetalSpatialScaler {
             )
         }
     }
+
     fn get_output_size(&self) -> (u32, u32) {
         unsafe {
             (
@@ -188,12 +262,11 @@ impl TemporalScaler for MetalSpatialScaler {
             )
         }
     }
-    fn set_reset(&mut self, _reset: bool) {}
 
     fn set_color_texture(&mut self, color_texture: wgpu::TextureView) {
         unsafe {
             self.inner.setColorTexture(Some(
-                &color_texture
+                color_texture
                     .texture()
                     .as_hal::<Metal>()
                     .unwrap()
@@ -201,28 +274,41 @@ impl TemporalScaler for MetalSpatialScaler {
             ))
         }
     }
-    fn set_motion_texture(&mut self, _motion_texture: wgpu::TextureView) {}
-    fn set_depth_texture(&mut self, _depth_texture: wgpu::TextureView) {}
-    fn set_output_texture(&mut self, _output_texture: wgpu::TextureView) {}
-    fn set_motion_vector_scale(&mut self, _motion_vector_scale: (f32, f32)) {}
-    fn set_jitter_offset(&mut self, _jitter: (f32, f32)) {}
-    fn set_depth_reversed(&mut self, _is_depth_reversed: bool) {}
+
+    fn set_output_texture(&mut self, output_texture: wgpu::TextureView) {
+        unsafe {
+            self.inner.setOutputTexture(Some(
+                output_texture
+                    .texture()
+                    .as_hal::<Metal>()
+                    .unwrap()
+                    .raw_handle(),
+            ))
+        }
+    }
+
+    fn set_input_content_size(&mut self, width: u32, height: u32) {
+        unsafe {
+            self.inner.setInputContentWidth(width as _);
+            self.inner.setInputContentHeight(height as _);
+        }
+    }
+
     fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) {
         unsafe {
             encoder.as_hal_mut::<Metal, _, _>(|inner| {
                 let handle = inner.unwrap().raw_command_buffer().unwrap();
-                self.inner.encodeToCommandBuffer(&handle);
+                self.inner.encodeToCommandBuffer(handle);
             });
         };
     }
 }
 
 fn is_hdr(format: wgpu::TextureFormat) -> bool {
-    match format {
-        wgpu::TextureFormat::Rgba16Float => true,
-        wgpu::TextureFormat::Rgba32Float => true,
-        _ => false,
-    }
+    matches!(
+        format,
+        wgpu::TextureFormat::Rgba16Float | wgpu::TextureFormat::Rgba32Float
+    )
 }
 
 fn map_format(format: wgpu::TextureFormat) -> MTLPixelFormat {

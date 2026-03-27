@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-pollster = "0.4.0"
-sdl3 = { version = "0.17.3", features = ["raw-window-handle"] }
 wgpu = "29"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-metal = "0.3"
 objc2-metal-fx = "0.3"
+
+[workspace]
+members = ["examples/sdl3_demo"]
+default-members = [".", "examples/sdl3_demo"]
+resolver = "3"

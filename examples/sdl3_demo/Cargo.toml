@@ -1,0 +1,14 @@
+[package]
+name = "sdl3_example"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bytemuck = { version = "1.25.0", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+glam = "0.32.1"
+pollster = "0.4.0"
+sdl3 = { version = "0.17.3", features = ["raw-window-handle"] }
+wgpu = "29"
+wgpu_scaler = { path = "../.." }
