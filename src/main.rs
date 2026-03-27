@@ -16,9 +16,7 @@ fn main() {
         .build()
         .unwrap();
 
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        ..Default::default()
-    });
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
@@ -83,7 +81,10 @@ fn main() {
             }
         }
 
-        let surface_texture = surface.get_current_texture().unwrap();
+        let wgpu::CurrentSurfaceTexture::Success(surface_texture) = surface.get_current_texture()
+        else {
+            continue;
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("encoder"),
         });

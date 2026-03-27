@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 pollster = "0.4.0"
 sdl3 = { version = "0.17.3", features = ["raw-window-handle"] }
-wgpu = { git = "https://github.com/gfx-rs/wgpu", branch = "trunk" }
+wgpu = "29"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
